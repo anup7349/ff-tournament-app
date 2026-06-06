@@ -1,0 +1,38 @@
+<!doctype html>
+<meta charset="utf-8" />
+<script>
+  const params = new URLSearchParams(location.search);
+  const view = params.get("view") || "dashboard";
+  const organizer = params.get("organizer") === "1";
+  const now = new Date().toISOString();
+  const state = {
+    activeTournamentId: "t1",
+    currentUserId: "u1",
+    users: [
+      { id: "u1", name: "Anup", email: "anup@example.com", mobile: "9876543210", password: "123456", freeFireUid: "123456789", walletBalance: 6, winningBalance: 120, isAdmin: false },
+      { id: "u2", name: "Rahul", email: "rahul@example.com", mobile: "9876500000", password: "123456", freeFireUid: "987654321", walletBalance: 3, winningBalance: 50, isAdmin: false }
+    ],
+    transactions: [],
+    walletRequests: [],
+    withdrawRequests: [
+      { id: "w1", userId: "u1", name: "Anup", mobile: "9876543210", upi: "anup@upi", amount: 100, status: "Pending", date: now },
+      { id: "w2", userId: "u2", name: "Rahul", mobile: "9876500000", upi: "rahul@upi", amount: 50, status: "Pending", date: now }
+    ],
+    payoutDetails: [
+      { id: "p1", userId: "u1", name: "Anup", mobile: "9876543210", upi: "anup@upi", accountName: "", bankName: "", accountNumber: "", ifsc: "", updatedAt: now }
+    ],
+    tournaments: [{
+      id: "t1",
+      tournament: { title: "Solo Weekend Clash", date: "2026-06-07", time: "19:30", map: "Bermuda", mode: "Solo Battle Royale", entry: "5 coins", prize: "Rs 500", rules: "No hacks, no teaming, be in room 10 minutes early." },
+      squads: [
+        { id: "s1", userId: "u1", name: "AnupFF", captain: "Anup", uid: "123456789", contact: "9876543210", players: "Solo player", kills: 12, placement: 20, status: "Confirmed", entryPaid: 5 },
+        { id: "s2", userId: "u2", name: "RahulFF", captain: "Rahul", uid: "987654321", contact: "9876500000", players: "Solo player", kills: 9, placement: 18, status: "Pending", entryPaid: 5 }
+      ],
+      rooms: [{ id: "r1", name: "Room A", round: "Final Match", roomId: "447812", password: "FF2026", start: "19:30", map: "Bermuda" }]
+    }]
+  };
+  localStorage.setItem("free-fire-tournament-hub", JSON.stringify(state));
+  if (organizer) sessionStorage.setItem("free-fire-organizer-mode", "true");
+  else sessionStorage.removeItem("free-fire-organizer-mode");
+  location.replace(`../index.html#${view}`);
+</script>
