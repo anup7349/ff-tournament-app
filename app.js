@@ -491,6 +491,10 @@ function openTournamentModal(id) {
   const item = id ? state.tournaments.find((entry) => entry.id === id) : null;
   form.reset();
   Object.entries(item?.tournament || blankTournamentDetails()).forEach(([key, value]) => { if (form.elements[key]) form.elements[key].value = value; });
+  const room = item?.rooms?.[0];
+  if (form.elements.primaryRoomId) form.elements.primaryRoomId.value = room?.roomId || "";
+  if (form.elements.primaryRoomPassword) form.elements.primaryRoomPassword.value = room?.password || "";
+  if (form.elements.primaryRoomStart) form.elements.primaryRoomStart.value = room?.start || item?.tournament?.time || "";
   form.elements.id.value = item?.id || "";
   $("#tournamentModalTitle").textContent = item ? "Edit Tournament" : "Create Tournament";
   $("#tournamentForm .primary-button").textContent = item ? "Save Tournament" : "Create Tournament";
@@ -572,17 +576,60 @@ function openRoomModal(id) {
 }
 
 async function upsertTournament(data, id) {
+  const roomDraft = {
+    roomId: String(data.primaryRoomId || "").trim(),
+    password: String(data.primaryRoomPassword || "").trim(),
+    start: data.primaryRoomStart || data.time,
+    map: data.map
+  };
+  delete data.primaryRoomId;
+  delete data.primaryRoomPassword;
+  delete data.primaryRoomStart;
   if (!cloudReady) {
     const existing = state.tournaments.find((item) => item.id === id);
+    let target = existing;
     if (existing) existing.tournament = data;
-    else { const made = makeTournament(data); state.tournaments.unshift(made); state.activeTournamentId = made.id; }
+    else {
+      target = makeTournament(data);
+      state.tournaments.unshift(target);
+      state.activeTournamentId = target.id;
+    }
+    if (roomDraft.roomId || roomDraft.password) {
+      const room = {
+        id: target.rooms[0]?.id || uid(),
+        name: "Custom Room",
+        round: "Main Match",
+        roomId: roomDraft.roomId,
+        password: roomDraft.password,
+        start: roomDraft.start,
+        map: roomDraft.map
+      };
+      target.rooms = target.rooms.length ? target.rooms.map((item, index) => index === 0 ? room : item) : [room];
+    }
     return render();
   }
   const payload = { title: data.title, match_date: data.date, match_time: data.time, map: data.map, mode: data.mode, entry: data.entry, prize: data.prize, rules: data.rules };
+  let tournamentId = id;
   if (id) await cloudCall("Save tournament", () => cloud.from("tournaments").update(payload).eq("id", id));
   else {
     const result = await cloudCall("Create tournament", () => cloud.from("tournaments").insert(payload).select("id").single());
-    state.activeTournamentId = result.data.id;
+    tournamentId = result.data.id;
+    state.activeTournamentId = tournamentId;
+  }
+  if (roomDraft.roomId || roomDraft.password) {
+    const current = state.tournaments.find((item) => item.id === tournamentId);
+    const existingRoom = current?.rooms?.[0];
+    const roomPayload = {
+      tournament_id: tournamentId,
+      name: "Custom Room",
+      round: "Main Match",
+      room_id: roomDraft.roomId,
+      password: roomDraft.password,
+      start: roomDraft.start,
+      map: roomDraft.map
+    };
+    if (existingRoom?.id) await cloudCall("Save room", () => cloud.from("rooms").update(roomPayload).eq("id", existingRoom.id));
+    else await cloudCall("Create room", () => cloud.from("rooms").insert(roomPayload));
   }
   await syncAndRender();
 }
