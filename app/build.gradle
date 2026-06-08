@@ -1,0 +1,18 @@
+apply plugin: "com.android.application"
+
+android {
+    namespace "com.battlehub.fftournament"
+    compileSdk 36
+
+    defaultConfig {
+        applicationId "com.battlehub.fftournament"
+        minSdk 23
+        targetSdk 35
+        versionCode 1
+        versionName "1.0"
+    }
+}
+
+dependencies {
+    implementation "com.google.android.gms:play-services-ads:24.9.0"
+}

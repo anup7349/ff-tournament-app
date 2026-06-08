@@ -5,6 +5,7 @@ create table if not exists profiles (
   free_fire_uid text,
   wallet_balance numeric not null default 0,
   winning_balance numeric not null default 0,
+  referral_code text unique,
   is_admin boolean not null default false,
   created_at timestamptz not null default now()
 );
@@ -95,6 +96,24 @@ create table if not exists withdraw_requests (
   created_at timestamptz not null default now()
 );
 
+create table if not exists referral_codes (
+  user_id uuid primary key references profiles(id) on delete cascade,
+  code text not null unique,
+  name text,
+  created_at timestamptz not null default now()
+);
+
+create table if not exists referrals (
+  id uuid primary key default gen_random_uuid(),
+  referrer_id uuid not null references profiles(id) on delete cascade,
+  referred_user_id uuid not null unique references profiles(id) on delete cascade,
+  referred_name text,
+  watched_ads_count integer not null default 0,
+  completed boolean not null default false,
+  reward_granted boolean not null default false,
+  created_at timestamptz not null default now()
+);
+
 alter table profiles enable row level security;
 alter table tournaments enable row level security;
 alter table squads enable row level security;
@@ -103,6 +122,8 @@ alter table wallet_requests enable row level security;
 alter table transactions enable row level security;
 alter table payout_details enable row level security;
 alter table withdraw_requests enable row level security;
+alter table referral_codes enable row level security;
+alter table referrals enable row level security;
 
 create policy "profiles read own or admin" on profiles
   for select using (auth.uid() = id or exists (select 1 from profiles p where p.id = auth.uid() and p.is_admin));
@@ -151,3 +172,14 @@ create policy "withdraw own insert" on withdraw_requests
   for insert with check (auth.uid() = user_id);
 create policy "withdraw admin update" on withdraw_requests
   for update using (exists (select 1 from profiles p where p.id = auth.uid() and p.is_admin));
+
+create policy "referral codes public read" on referral_codes for select using (true);
+create policy "referral codes own insert" on referral_codes for insert with check (auth.uid() = user_id);
+create policy "referral codes own update" on referral_codes for update using (auth.uid() = user_id);
+
+create policy "referrals own read" on referrals
+  for select using (auth.uid() = referrer_id or auth.uid() = referred_user_id or exists (select 1 from profiles p where p.id = auth.uid() and p.is_admin));
+create policy "referrals referred insert" on referrals
+  for insert with check (auth.uid() = referred_user_id);
+create policy "referrals own update" on referrals
+  for update using (auth.uid() = referrer_id or auth.uid() = referred_user_id or exists (select 1 from profiles p where p.id = auth.uid() and p.is_admin));
