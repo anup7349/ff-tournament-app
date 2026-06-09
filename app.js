@@ -17,6 +17,7 @@ let organizerMode = sessionStorage.getItem("free-fire-organizer-mode") === "true
 let cloudReady = Boolean(cloud);
 let state = loadState();
 let adWatchInProgress = false;
+let referralClaimInProgress = false;
 
 function uid() {
   return globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -415,11 +416,12 @@ function renderRefer() {
   const user = currentUser();
   const ownCode = user?.referralCode || (user ? makeReferralCode(user.id) : "");
   const referredByUser = state.referrals.filter((item) => item.referrerId === user?.id);
+  const referredByMe = state.referrals.find((item) => item.referredUserId === user?.id);
   const completed = referredByUser.filter((item) => item.completed).length;
   const claimable = referredByUser.filter((item) => item.completed && !item.rewardGranted).length;
   $("#referralCode").textContent = user ? ownCode : "Login to view";
-  $("#completedReferralCount").textContent = user ? `${completed} completed` : "0";
-  $("#claimReferralReward").disabled = !user || claimable < referralRewardThreshold;
+  $("#completedReferralCount").textContent = user ? `${completed} completed, ${claimable} claimable` : "0";
+  $("#claimReferralReward").disabled = !user || referralClaimInProgress || claimable < referralRewardThreshold;
   $("#referralList").innerHTML = referredByUser.map((item) => `
     <div class="payout-card">
       <strong>${escapeHtml(item.referredName || "Friend")}</strong>
@@ -427,7 +429,13 @@ function renderRefer() {
       <span>Status: ${item.completed ? "Completed" : "Waiting for 10 ads"}</span>
       <span>Reward batch: ${item.rewardGranted ? "Claimed" : "Not claimed"}</span>
     </div>
-  `).join("") || `<div class="empty">${user ? "No referred users yet." : "Login to see referrals."}</div>`;
+  `).join("") || (referredByMe ? `
+    <div class="payout-card">
+      <strong>Your friend referral progress</strong>
+      <span>Ads watched: ${Math.min(referredByMe.watchedAds, referralAdsRequired)} / ${referralAdsRequired}</span>
+      <span>Status: ${referredByMe.completed ? "Completed for your referrer" : "Watch 10 ads to complete it"}</span>
+    </div>
+  ` : `<div class="empty">${user ? "No referred users yet." : "Login to see referrals."}</div>`);
 }
 
 function referralRewardStats(user = currentUser()) {
@@ -738,34 +746,36 @@ async function creditAdCoin() {
   if (!requireLogin()) return;
   const user = currentUser();
   const nextBalance = Number(user.walletBalance || 0) + coinRewardPerAd;
+  let referralCompleted = false;
   if (cloudReady) {
     await cloudCall("Add ad coin", () => cloud.from("profiles").update({ wallet_balance: nextBalance }).eq("id", user.id));
     await cloud.from("transactions").insert({ user_id: user.id, type: "credit", amount: coinRewardPerAd, note: "Rewarded ad coin" });
-    await updateReferralAdProgress(user);
+    referralCompleted = await updateReferralAdProgress(user);
   } else {
     user.walletBalance = nextBalance;
-    await updateReferralAdProgress(user);
+    referralCompleted = await updateReferralAdProgress(user);
   }
   await syncAndRender();
-  showToast("1 coin added.");
+  showToast(referralCompleted ? "1 coin added. Referral completed for your friend." : "1 coin added.");
 }
 
 async function updateReferralAdProgress(user = currentUser()) {
   if (!user) return;
   const localRow = state.referrals.find((item) => item.referredUserId === user.id && !item.completed);
   if (cloudReady) {
-    const result = await cloud.from("referrals").select("*").eq("referred_user_id", user.id).eq("completed", false).maybeSingle();
+    const result = await cloudCall("Load referral progress", () => cloud.from("referrals").select("*").eq("referred_user_id", user.id).eq("completed", false).maybeSingle());
     if (result.error || !result.data) return;
     const watched = Number(result.data.watched_ads_count || 0) + 1;
-    await cloud.from("referrals").update({
+    await cloudCall("Update referral progress", () => cloud.from("referrals").update({
       watched_ads_count: watched,
       completed: watched >= referralAdsRequired
-    }).eq("id", result.data.id);
-    return;
+    }).eq("id", result.data.id));
+    return watched >= referralAdsRequired;
   }
   if (!localRow) return;
   localRow.watchedAds += 1;
   if (localRow.watchedAds >= referralAdsRequired) localRow.completed = true;
+  return localRow.completed;
 }
 
 async function saveReferralCode(userId, code, name) {
@@ -773,19 +783,27 @@ async function saveReferralCode(userId, code, name) {
   if (result.error) console.warn("Referral code save skipped", result.error);
 }
 
-async function createReferralLinkIfNeeded(referralCode, referredUserId, referredName) {
-  if (!referralCode) return;
-  const referrerResult = await cloud.from("referral_codes").select("*").eq("code", referralCode).maybeSingle();
-  if (referrerResult.error || !referrerResult.data?.user_id || referrerResult.data.user_id === referredUserId) return;
-  const result = await cloud.from("referrals").insert({
-    referrer_id: referrerResult.data.user_id,
+async function findReferrerByCode(referralCode) {
+  if (!referralCode) return null;
+  const result = await cloudCall("Check referral code", () => cloud.from("referral_codes").select("*").eq("code", referralCode).maybeSingle());
+  return result.data || null;
+}
+
+async function createReferralLinkIfNeeded(referralCode, referredUserId, referredName, knownReferrer = null) {
+  if (!referralCode) return false;
+  const referrer = knownReferrer || await findReferrerByCode(referralCode);
+  if (!referrer?.user_id || referrer.user_id === referredUserId) return false;
+  const existing = await cloudCall("Check referral link", () => cloud.from("referrals").select("id").eq("referred_user_id", referredUserId).maybeSingle());
+  if (existing.data) return false;
+  await cloudCall("Save referral link", () => cloud.from("referrals").insert({
+    referrer_id: referrer.user_id,
     referred_user_id: referredUserId,
     referred_name: referredName,
     watched_ads_count: 0,
     completed: false,
     reward_granted: false
-  });
-  if (result.error) console.warn("Referral link save skipped", result.error);
+  }));
+  return true;
 }
 
 async function createOrRepairProfile(authUser, fallback = {}) {
@@ -937,10 +955,17 @@ $("#authForm").addEventListener("submit", async (event) => {
 
   if (data.mode === "login") {
     const result = await cloudCall("Login", () => cloud.auth.signInWithPassword({ email, password: data.password }));
-    await cloudCall("Repair profile", () => createOrRepairProfile(result.data.user));
+    const profile = await cloudCall("Repair profile", () => createOrRepairProfile(result.data.user));
+    const friendReferralCode = String(result.data.user.user_metadata?.friend_referral_code || "").trim().toUpperCase();
+    await createReferralLinkIfNeeded(friendReferralCode, result.data.user.id, profile.name);
     state.currentUserId = result.data.user.id;
   } else {
     if (!data.name.trim() || !mobile) return showToast("Name and mobile required.");
+    const referrer = referralCode ? await findReferrerByCode(referralCode) : null;
+    if (referralCode && !referrer) {
+      showToast("Referral code not found. Check the code or leave it empty.");
+      return;
+    }
     const pendingReferralCode = makeReferralCode(email);
     const result = await cloudCall("Register", () => cloud.auth.signUp({
       email,
@@ -960,7 +985,8 @@ $("#authForm").addEventListener("submit", async (event) => {
       return;
     }
     const profile = await cloudCall("Create profile", () => createOrRepairProfile(result.data.user, { name: data.name.trim(), mobile, newReferralCode: makeReferralCode(result.data.user.id) }));
-    await createReferralLinkIfNeeded(referralCode, result.data.user.id, profile.name);
+    const referralLinked = await createReferralLinkIfNeeded(referralCode, result.data.user.id, profile.name, referrer);
+    if (referralCode && referralLinked) showToast("Referral linked. Watch 10 ads to complete it.");
     state.currentUserId = result.data.user.id;
   }
   $("#authModal").close();
@@ -1061,14 +1087,25 @@ $("#claimReferralReward").addEventListener("click", async () => {
     return;
   }
   const rewardRows = claimableRows.slice(0, referralRewardThreshold);
-  const nextBalance = Number(user.walletBalance || 0) + referralRewardCoins;
-  if (cloudReady) {
-    await cloudCall("Add referral reward", () => cloud.from("profiles").update({ wallet_balance: nextBalance }).eq("id", user.id));
-    await Promise.all(rewardRows.map((row) => cloud.from("referrals").update({ reward_granted: true }).eq("id", row.id)));
-    await cloud.from("transactions").insert({ user_id: user.id, type: "credit", amount: referralRewardCoins, note: "Referral reward" });
-  } else {
-    user.walletBalance = nextBalance;
-    rewardRows.forEach((row) => { row.rewardGranted = true; });
+  referralClaimInProgress = true;
+  renderRefer();
+  try {
+    if (cloudReady) {
+      const result = await cloudCall("Claim referral reward", () => cloud.rpc("claim_referral_reward", {
+        referrals_needed: referralRewardThreshold,
+        reward_coins: referralRewardCoins
+      }));
+      if (!Number(result.data || 0)) {
+        await syncAndRender();
+        showToast(`Need ${referralRewardThreshold} completed referrals.`);
+        return;
+      }
+    } else {
+      user.walletBalance = Number(user.walletBalance || 0) + referralRewardCoins;
+      rewardRows.forEach((row) => { row.rewardGranted = true; });
+    }
+  } finally {
+    referralClaimInProgress = false;
   }
   await syncAndRender();
   showToast(`${referralRewardCoins} referral coins added.`);
